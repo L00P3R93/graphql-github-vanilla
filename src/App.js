@@ -10,85 +10,76 @@ const axiosGithubGraphQL = axios.create({
 	}
 })
 
-/*const GET_ORGANIZATION = `
-	{
-		organization(login: "the-road-to-learn-react"){
+const GET_ISSUES_OF_REPOSITORY = `
+	query($organization: String!, $repository: String!, $cursor: String){
+		organization(login: $organization){
 			name
 			url
-		}
-	}
-`;
-
-const GET_REPOSITORY_OF_ORGANIZATION= `
-	{
-		organization(login: "the-road-to-learn-react"){
-			name
-			url
-			repository(name: "the-road-to-learn-react"){
+			repository(name: $repository){
 				name
 				url
-			}
-		}
-	}
-`;
-
-
-const GET_ISSUES_OF_REPOSITORY = `
-{
-	organization(login: ""){
-		name
-		url
-		repository(name: ""){
-			name
-			url
-			issues(last: 5){
-				edges{
-					node{
-						id
-						title
-						url
+				issues(last: 5, after: $cursor, states: [OPEN]){
+					edges{
+						node{
+							id
+							title
+							url
+							reactions(last: 3){
+								edges {
+									node {
+										id
+										content
+									}
+								}
+							}
+						}
+					}
+					totalCount
+					pageInfo {
+						endCursor
+						hasNextPage
 					}
 				}
 			}
 		}
 	}
-}
-`;*/
-
-const getIssuesOfRepositoryQuery = (organization, repository) => `
-{
-	organization(login: "${organization}"){
-		name
-		url
-		repository(name: "${repository}"){
-			name
-			url
-			issues(last: 5){
-				edges{
-					node{
-						id
-						title
-						url
-					}
-				}
-			}
-		}
-	}
-}
 `;
 
-const getIssuesOfRepository = path => {
+const getIssuesOfRepository = (path, cursor) => {
 	const [organization, repository] = path.split('/')
 
 	return axiosGithubGraphQL.post('', {
-		query: getIssuesOfRepositoryQuery(organization, repository)
+		query: GET_ISSUES_OF_REPOSITORY,
+		variables: {organization, repository, cursor},
 	})
 }
 
-const resolveIssuesQuery = queryResult => () => ({
-	organization: queryResult.data.data.organization,
-	errors: queryResult.data.errors
-})
+const resolveIssuesQuery = (queryResult, cursor) => state => {
+	const {data, errors} = queryResult.data	
+	if(!cursor){
+		return {
+			organization: data.organization,
+			errors
+		};
+	}
+	const {edges: oldIssues} = state.organization.repository.issues;
+	const {edges: newIssues} = data.organization.repository.issues;
+	const updatedIssues = [...oldIssues, ...newIssues]
+
+	return {
+		organization: {
+			...data.organization,
+			repository: {
+				...data.organization.repository,
+				issues: {
+					...data.organization.repository.issues,
+					edges: updatedIssues
+				},
+			},
+		},
+		errors
+	};
+};
 
 class App extends Component {
 	state = {
@@ -110,10 +101,15 @@ class App extends Component {
 		event.preventDefault()
 	}
 
-	onFetchFromGithub = path => {
-		getIssuesOfRepository(path).then(queryResult => 
-			this.setState(resolveIssuesQuery(queryResult))
+	onFetchFromGithub = (path, cursor) => {
+		getIssuesOfRepository(path, cursor).then(queryResult => 
+			this.setState(resolveIssuesQuery(queryResult, cursor))
 		)
+	}
+
+	onFetchMoreIssues = () => {
+		const {endCursor} = this.state.organization.repository.issues.pageInfo
+		this.onFetchFromGithub(this.state.path, endCursor)
 	}
 
 	render() {
@@ -137,7 +133,11 @@ class App extends Component {
 				<hr/>
 				{organization 
 				? (
-					<Organization organization={organization} errors={errors} />
+					<Organization 
+						organization={organization} 
+						errors={errors} 
+						onFetchMoreIssues={this.onFetchMoreIssues}
+					/>
 				) : (
 					<p>No Information yet ...</p>
 				)}
@@ -146,7 +146,7 @@ class App extends Component {
 	}
 }
 
-const Organization = ({organization, errors}) => {
+const Organization = ({organization, errors, onFetchMoreIssues}) => {
 	if(errors){
 		return(
 			<p>
@@ -158,29 +158,49 @@ const Organization = ({organization, errors}) => {
 	return (
 		<div>
 			<p>
-				<strong>Issues from Organization:</strong>
+				<strong>Issues from Organization:&nbsp;</strong>
 				<a href={organization.url}>{organization.name}</a>
 			</p>
-			<Repository repository={organization.repository} />
+			<Repository 
+				repository={organization.repository} 
+				onFetchMoreIssues={onFetchMoreIssues} />
 		</div>
 	)
 }
 
-const Repository = ({repository}) => (
+const Repository = ({repository, onFetchMoreIssues}) => (
 	<div>
 		<p>
-			<strong>In Repository:</strong>
+			<strong>In Repository:&nbsp;</strong>
 			<a href={repository}>{repository.name}</a>
 		</p>
+		<List list={repository} />
+		<hr/>
+		{repository.issues.pageInfo.hasNextPage && (
+			<button onClick={onFetchMoreIssues}>More...</button>
+		)}
+		
+	</div>
+)
 
+
+const List = ({list}) => (
+	<ul>
+		{list.issues.edges.map(issue => (
+			<Item item={issue}/>
+		))}
+	</ul>
+)
+
+const Item = ({item}) => (
+	<li key={item.node.id}>
+		<a href={item.node.url}>{item.node.title}</a>
 		<ul>
-			{repository.issues.edges.map(issue => (
-				<li key={issue.node.id}>
-					<a href={issue.node.url}>{issue.node.title}</a>
-				</li>
+			{item.node.reactions.edges.map(reaction => (
+				<li key={reaction.node.id}>{reaction.node.content}</li>
 			))}
 		</ul>
-	</div>
+	</li>
 )
 
 
